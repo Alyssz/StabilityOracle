@@ -242,8 +242,8 @@ class Transformer(nn.Module):
             self.register_buffer("rbf_mu", rbf_mu)
             self.register_buffer("rbf_sigma", rbf_sigma)
             self.edge_type_emb = nn.Embedding(4, self.num_rbf)
-            if "fix_edge_type" in self.args.debug:
-                self.edge_type_emb = nn.Embedding(_NUM_ATOM_TYPES**2 + 1, self.num_rbf)
+            # if "fix_edge_type" in self.args.debug:
+            #     self.edge_type_emb = nn.Embedding(_NUM_ATOM_TYPES**2 + 1, self.num_rbf)
 
     def forward(
         self,
@@ -418,8 +418,8 @@ class Backbone(nn.Module):
                 ),
                 nn.Linear(self.num_heads, self.num_heads),
             )
-        if "node3d" in self.args.debug:
-            self.coord_emb = nn.Linear(3, embedding_size)
+        # if "node3d" in self.args.debug:
+        #     self.coord_emb = nn.Linear(3, embedding_size)
 
     def forward(self, feats, atom_types, pp, coords, ca, mask, return_idx=[3]):
         
