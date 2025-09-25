@@ -87,14 +87,18 @@ class Mlp(nn.Module):
         bias = [True, True]
         linear_layer = partial(nn.Conv2d, kernel_size=1) if use_conv else nn.Linear
 
-        self.fc1 = linear_layer(in_features, hidden_features, bias=bias)
-        self.fc2 = linear_layer(hidden_features, out_features, bias=bias)
+        self.fc1 = linear_layer(in_features, hidden_features, bias=bias[0])
+        self.drop1 = nn.Dropout(drop)
+        self.fc2 = linear_layer(hidden_features, out_features, bias=bias[1])
+        self.drop2 = nn.Dropout(drop)
         self.act = act_layer()
 
     def forward(self, x):
         x = self.fc1(x)
+        x = self.drop1(x)
         x = self.act(x)
         x = self.fc2(x)
+        x = self.drop2(x)
         return x
 
 
@@ -368,8 +372,8 @@ class Backbone(nn.Module):
         self.num_heads = max(8, _DEFAULT_V_DIM[0] // 32)
 
         self.layers = []
-        for _ in range(depth):
-            if _ == depth - 1:
+        for layer_idx in range(depth):
+            if layer_idx == depth - 1:
                 use_ap = use_attention_pool
                 pool_select = 128
             else:

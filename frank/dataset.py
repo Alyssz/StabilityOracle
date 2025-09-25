@@ -1,5 +1,4 @@
 import sys
-sys.path.append('/mnt/beegfs/home/giulio/transformerSADIC/definitivi')
 from dataset_builder import load_all_proteins_as_df
 
 import numpy as np
@@ -34,6 +33,22 @@ _amino_acids = lambda x: {
     "TYR": 18,
     "VAL": 19,
 }.get(x, 20)
+
+# Fixed element mapping for consistent atom type encoding
+_element_mapping = {
+    "H": 0,
+    "C": 1,
+    "N": 2,
+    "O": 3,
+    "F": 4,
+    "S": 5,
+    "P": 6,
+    "Cl": 7,
+    "CL": 7,
+    "Br": 7,
+    "BR": 7,
+    "I": 7,
+}
 
 AA_1toidx = {
     'A': 0,
@@ -163,16 +178,11 @@ class GraphTransformerDataset(torch.utils.data.Dataset):
         mask = stack_and_convert('mask', np.float32)
         ca = stack_and_convert('ca', np.float32)
 
-        # Convert atom_types to string, then to int using a mapping
+        # Convert atom_types using fixed element mapping
         atom_types_list = [g['atom_types'] for g in graphs]
-        # Build a mapping for atom types
-        unique_atoms = set()
-        for arr in atom_types_list:
-            unique_atoms.update([str(x) for x in arr])
-        atom2idx = {atom: i for i, atom in enumerate(sorted(unique_atoms))}
         atom_types_idx = []
         for arr in atom_types_list:
-            arr_idx = [atom2idx[str(x)] for x in arr]
+            arr_idx = [_element_mapping.get(str(x), 8) for x in arr]  # 8 is unknown element
             atom_types_idx.append(arr_idx)
         atom_types = torch.tensor(np.stack(atom_types_idx), dtype=torch.long)
 

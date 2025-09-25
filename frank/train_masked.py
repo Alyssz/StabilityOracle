@@ -1,6 +1,6 @@
 # train_masked_residue.py
 import sys
-sys.path.append('/mnt/beegfs/home/giulio/StabilityOracle/StabilityOracle/model')
+sys.path.append('/repo/nunziati/StabilityOracle/StabilityOracle/model')
 
 import os, math, random
 import numpy as np
@@ -24,17 +24,22 @@ import torchmetrics
 from dataset import GraphTransformerDataset
 
 class BackboneLightningModule(pl.LightningModule):
-    def __init__(self, use_sadic=False, dropout=0.2, learning_rate=1e-4, weight_decay=0.01, **backbone_kwargs):
+    def __init__(self, use_sadic=False, dropout=0.2, learning_rate=1e-4, weight_decay=0.01, compile=False, **backbone_kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.model = Backbone(**backbone_kwargs)
         self.criterion = nn.CrossEntropyLoss()
 
-        try:
-            self.ampnn = torch.compile(self.ampnn)
-        except Exception:
-            pass
+        if compile and torch.__version__ >= "2.0":
+            # PyTorch 2.0+ compile (optional, may fail in some environments)
+            try:
+                self.model = torch.compile(self.model)
+                print("Model compilation enabled")
+            except Exception as e:
+                print(f"Model compilation failed: {e}")
+                pass
  
+        self.dropout = dropout
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.use_sadic = use_sadic
@@ -64,17 +69,45 @@ class BackboneLightningModule(pl.LightningModule):
     def inference(self, batch, batch_idx):
         inputs, targets = batch
 
+        # Input validation - check for NaN/inf values
+        for key, tensor in inputs.items():
+            if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+                self.print(f"Warning: NaN/inf detected in input '{key}' at batch {batch_idx}")
+                # Replace NaN/inf with zeros
+                tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+                inputs[key] = tensor
+
         accessibility_key = "sadic" if self.use_sadic else "sasa"
         pp = torch.stack([inputs["charges"], inputs[accessibility_key]], dim=-1)
-
-        features, logits = self.model([None], inputs["atom_types"], pp, inputs["coords"], inputs["ca"], inputs["mask"])
+        ca = inputs["ca"]
+        mask = inputs["mask"]
         
+        # CORREZIONE FORSE NECESSARIA
+        ca = ca.reshape(-1, 1, 3)
+        mask = mask.bool()
+
+        features, logits = self.model([None], inputs["atom_types"], pp, inputs["coords"], ca, mask)
+
+        # Check outputs for NaN/inf
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            self.print(f"Warning: NaN/inf detected in model output at batch {batch_idx}")
+            self.print(f"Logits stats: min={logits.min()}, max={logits.max()}, mean={logits.mean()}")
+
         return features, logits, targets
 
     def training_step(self, batch, batch_idx):
         features, logits, targets = self.inference(batch, batch_idx)
 
         loss = self.criterion(logits, targets)
+        
+        # Check for NaN loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            self.print(f"NaN/inf loss detected at batch {batch_idx}")
+            self.print(f"Logits stats: min={logits.min()}, max={logits.max()}, mean={logits.mean()}")
+            self.print(f"Targets: {targets}")
+            # Return a small loss to prevent training from crashing
+            return torch.tensor(0.01, requires_grad=True, device=loss.device)
+        
         self.train_acc(logits, targets)
         self.train_acc_3(logits, targets)
 
@@ -121,9 +154,11 @@ class BackboneLightningModule(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("LiteModel")
         parser.add_argument("--dropout", type=float, default=0.2)
-        parser.add_argument("--learning_rate", type=float, default=1e-3)
+        parser.add_argument("--learning_rate", type=float, default=5e-4)
         parser.add_argument("--weight_decay", type=float, default=0.01)
         parser.add_argument("--max_epochs", type=int, default=40)
+        parser.add_argument("--batch_size", type=int, default=8)
+        parser.add_argument("--compile", action="store_true", help="Enable torch.compile (may cause issues in some environments)")
         return parent_parser
  
     def configure_optimizers(self):
@@ -136,7 +171,7 @@ class BackboneLightningModule(pl.LightningModule):
             else:
                 decay.append(p)
  
-        optim_kwargs = dict(lr=self.learning_rate, weight_decay=self.weight_decay)
+        optim_kwargs = dict(lr=self.learning_rate, weight_decay=self.weight_decay, eps=1e-8)
         # fused AdamW if available (PyTorch 2+ with recent CUDA)
         try:
             optimizer = torch.optim.AdamW(
@@ -225,22 +260,24 @@ def run_training(args):
     trainer = pl.Trainer(
         devices=1,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        precision="16-mixed",
+        precision="32",  # Use full precision to avoid numerical instability
         max_epochs=args.max_epochs,
         callbacks=[checkpoint_callback, lr_monitor, early_stopping_callback],
         logger=wandb_logger,  # --- W&B: hook logger into Trainer
+        gradient_clip_val=1.0,  # Add gradient clipping to prevent NaN
+        gradient_clip_algorithm="norm",
     )
  
     # split the train set into two
     seed = torch.Generator().manual_seed(42)
     train_loader = DataLoader(
-        train_data, batch_size=4, shuffle=True, num_workers=16, pin_memory=True, collate_fn=dataset.collate_fn
+        train_data, batch_size=args.batch_size, shuffle=True, num_workers=16, pin_memory=True, collate_fn=dataset.collate_fn
     )
     valid_loader = DataLoader(
-        valid_data, batch_size=4, shuffle=False, num_workers=16, pin_memory=True, collate_fn=dataset.collate_fn
+        valid_data, batch_size=args.batch_size, shuffle=False, num_workers=16, pin_memory=True, collate_fn=dataset.collate_fn
     )
     test_loader = DataLoader(
-        test_data, batch_size=4, shuffle=False, num_workers=16, pin_memory=True, collate_fn=dataset.collate_fn
+        test_data, batch_size=args.batch_size, shuffle=False, num_workers=16, pin_memory=True, collate_fn=dataset.collate_fn
     )
 
  
@@ -249,6 +286,7 @@ def run_training(args):
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         use_sadic=args.enable_sadic,
+        compile=args.compile,
     )
  
     # # z-norm: compute or load stats, then set them on the model
@@ -293,7 +331,7 @@ def main():
  
     parser = ArgumentParser()
     parser = BackboneLightningModule.add_model_specific_args(parser)
-    parser.add_argument("--data_path", type=str, default="/mnt/beegfs/home/giulio/transformerSADIC/frank/data/masked_prediction/training_structural_info_with_SADIC.hdf5")
+    parser.add_argument("--data_path", type=str, default="/repo/nunziati/StabilityOracle/frank/data/masked_prediction/training_structural_info_with_SADIC.hdf5")
  
     # after your existing parser args:
     # parser.add_argument("--z_norm", action="store_true", help="Enable z-normalization of node/edge features based on the training set")
