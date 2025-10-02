@@ -74,7 +74,7 @@ AA_1toidx = {
 }
 
 class GraphTransformerDataset(torch.utils.data.Dataset):
-    def __init__(self, hdf5_file, pad_to=512, dist_threshold=10.0, max_entries=0, tranform=None):
+    def __init__(self, hdf5_file, pad_to=512, dist_threshold=8.0, max_entries=0, tranform=None):
         self.df = load_all_proteins_as_df(hdf5_file, max_entries=max_entries if max_entries > 0 else None)
         self.examples = None
         self.generate_examples()
@@ -111,7 +111,7 @@ class GraphTransformerDataset(torch.utils.data.Dataset):
 
         self.examples = pd.DataFrame(examples)
 
-    def build_graph(self, pdb_id, res_id, pad_to=512, dist_threshold=10.0):
+    def build_graph(self, pdb_id, res_id, pad_to=512, dist_threshold=8.0):
         df_pdb = self.df[self.df['protein_id'] == pdb_id]
 
         # Skip if CA is missing in residue
@@ -141,10 +141,12 @@ class GraphTransformerDataset(torch.utils.data.Dataset):
         atom_types = np.zeros(pad_to, dtype=nearby_atoms['element'].dtype)
         sasa = np.zeros(pad_to, dtype=np.float32)
 
-        coords[:num_atoms] = nearby_atoms[['x', 'y', 'z']].values
+        coords[:num_atoms] = nearby_atoms[['x', 'y', 'z']].values - ca
         charges[:num_atoms] = nearby_atoms['charge'].values
         sadic[:num_atoms] = nearby_atoms['sadic'].values
-        atom_types[:num_atoms] = nearby_atoms['element'].values
+        # Map atom types using the fixed mapping before adding them to the atom_types array
+        mapped_atom_types = torch.tensor([_element_mapping.get(str(e), 7) for e in nearby_atoms['element'].values], dtype=torch.int64)
+        atom_types[:num_atoms] = mapped_atom_types
         sasa[:num_atoms] = nearby_atoms['SASA'].values
 
         graph['coords'] = coords
@@ -153,7 +155,7 @@ class GraphTransformerDataset(torch.utils.data.Dataset):
         graph['atom_types'] = atom_types
         graph['sasa'] = sasa
         graph['mask'] = mask
-        graph['ca'] = ca
+        graph['ca'] = ca - ca  # Center CA at origin
 
         return graph
 
@@ -177,14 +179,7 @@ class GraphTransformerDataset(torch.utils.data.Dataset):
         sasa = stack_and_convert('sasa', np.float32)
         mask = stack_and_convert('mask', np.float32)
         ca = stack_and_convert('ca', np.float32)
-
-        # Convert atom_types using fixed element mapping
-        atom_types_list = [g['atom_types'] for g in graphs]
-        atom_types_idx = []
-        for arr in atom_types_list:
-            arr_idx = [_element_mapping.get(str(x), 8) for x in arr]  # 8 is unknown element
-            atom_types_idx.append(arr_idx)
-        atom_types = torch.tensor(np.stack(atom_types_idx), dtype=torch.long)
+        atom_types = stack_and_convert('atom_types', np.int64)
 
         labels = torch.tensor(labels, dtype=torch.long)
 

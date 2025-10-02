@@ -154,8 +154,8 @@ class BackboneLightningModule(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("LiteModel")
         parser.add_argument("--dropout", type=float, default=0.2)
-        parser.add_argument("--learning_rate", type=float, default=5e-4)
-        parser.add_argument("--weight_decay", type=float, default=0.01)
+        parser.add_argument("--learning_rate", type=float, default=1e-3)
+        parser.add_argument("--weight_decay", type=float, default=1e-2)
         parser.add_argument("--max_epochs", type=int, default=40)
         parser.add_argument("--batch_size", type=int, default=8)
         parser.add_argument("--compile", action="store_true", help="Enable torch.compile (may cause issues in some environments)")
@@ -197,11 +197,11 @@ class BackboneLightningModule(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",          # update every step
-                "frequency": 1,
-            },
+            # "lr_scheduler": {
+            #     "scheduler": scheduler,
+            #     "interval": "step",          # update every step
+            #     "frequency": 1,
+            # },
         }
 
 def run_training(args): 
